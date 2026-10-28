@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "claims": {
+    "asof-version": {
+      "value": "0.4.1",
+      "checked": "2026-10-28T23:03:13Z",
+      "source": "run",
+      "files": [
+        "README.md"
+      ]
+    },
+    "chesterton-version": {
+      "value": "0.1.1",
+      "checked": "2026-10-28T23:03:13Z",
+      "source": "run",
+      "files": [
+        "README.md"
+      ]
+    }
+  }
+}

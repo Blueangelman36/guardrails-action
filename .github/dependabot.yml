@@ -1,0 +1,13 @@
+# Weekly pull requests when an action this repository uses has a new version,
+# including the asof and chesterton pins in action.yml. The ci `self` job then
+# fails until the README names the new releases (asof.ini), so a bump can't
+# leave the README describing the old ones.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

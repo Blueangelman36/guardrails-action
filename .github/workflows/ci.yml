@@ -1,0 +1,61 @@
+name: ci
+
+# The action tested the way someone else's repository would use it: each probe
+# job builds a small repository, runs the action against it, and checks the
+# result it should have reached. A probe that expects a failure and gets a pass
+# fails the job, so a guardrail that goes quiet is caught here first.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  self:
+    # This repository's own README claims, checked by the action it describes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: g
+        uses: ./
+      - name: asof ran and passed; fence had nothing to check
+        run: |
+          echo "asof=${{ steps.g.outputs.asof }} fence=${{ steps.g.outputs.fence }}"
+          [ "${{ steps.g.outputs.asof }}" = passed ] && [ "${{ steps.g.outputs.fence }}" = skipped ]
+
+  probes:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        probe: [clean, split, removed-reason, nothing-to-check, nothing-allowed]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: guardrails-action
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # The action reads the workspace root, so the probe is built there, beside
+      # the checkout of the action (which the probe's .gitignore leaves out).
+      - name: Build the probe repository
+        run: bash guardrails-action/tests/make-probe.sh "${{ matrix.probe }}" "$GITHUB_WORKSPACE"
+      - id: g
+        continue-on-error: true
+        uses: ./guardrails-action
+        with:
+          require: ${{ matrix.probe == 'nothing-allowed' && 'false' || 'true' }}
+      - name: The action reached the expected result
+        env:
+          PROBE: ${{ matrix.probe }}
+          OUTCOME: ${{ steps.g.outcome }}
+          ASOF: ${{ steps.g.outputs.asof }}
+          FENCE: ${{ steps.g.outputs.fence }}
+        run: |
+          echo "probe=$PROBE outcome=$OUTCOME asof=$ASOF fence=$FENCE"
+          case "$PROBE" in
+            clean)            [ "$OUTCOME" = success ] && [ "$ASOF" = passed ] && [ "$FENCE" = passed ] ;;
+            split)            [ "$OUTCOME" = failure ] ;;
+            removed-reason)   [ "$OUTCOME" = failure ] ;;
+            nothing-to-check) [ "$OUTCOME" = failure ] ;;
+            nothing-allowed)  [ "$OUTCOME" = success ] ;;
+          esac

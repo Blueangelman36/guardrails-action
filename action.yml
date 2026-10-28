@@ -1,0 +1,160 @@
+name: guardrails
+description: >-
+  Two checks for the things tests never look at: the numbers your docs state
+  (asof), and the reasons recorded for code that looks removable (fence).
+author: Blueangelman36
+branding:
+  icon: check-square
+  color: gray-dark
+
+# Pin it like any action, to a tag or a full commit:
+#
+#   - uses: actions/checkout@v7
+#   - uses: Blueangelman36/guardrails-action@<tag or commit>
+#
+# Each check runs only where it has something to check (see `asof` and `fence`
+# below), both always run even when the first fails, and the step fails if either
+# does. When neither finds anything to check the step fails too, because a
+# guardrail that guards nothing should not look green.
+
+inputs:
+  asof:
+    description: >-
+      `auto` (run when there is an asof.ini, or a file with an asof: marker),
+      `true` (always run) or `false`.
+    required: false
+    default: auto
+  asof-args:
+    description: Arguments passed to asof.
+    required: false
+    default: check
+  fence:
+    description: >-
+      `auto` (run when there is a .fence/notes folder), `true` or `false`.
+    required: false
+    default: auto
+  fence-implementation:
+    description: >-
+      `python` (what `pip install chesterton` gives you) or `rust` (reads
+      JavaScript, TypeScript, Kotlin and Rust too). It must be the build your
+      notes were written with; `fence doctor` says which.
+    required: false
+    default: python
+  fence-args:
+    description: Arguments passed to fence.
+    required: false
+    default: check --strict
+  comment-on-pr:
+    description: >-
+      `true` to quote the recorded reasons a pull request touches in one comment
+      on it. Needs `permissions: pull-requests: write` on the job.
+    required: false
+    default: "false"
+  require:
+    description: >-
+      `true` to fail when neither check found anything to check. Set `false` for
+      a repository that is adopting them gradually.
+    required: false
+    default: "true"
+  token:
+    description: Token for the pull request comment.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  asof:
+    description: "`passed`, `failed` or `skipped`."
+    value: ${{ steps.verdict.outputs.asof }}
+  fence:
+    description: "`passed`, `failed` or `skipped`."
+    value: ${{ steps.verdict.outputs.fence }}
+
+runs:
+  using: composite
+  steps:
+    - name: What is there to check
+      id: plan
+      shell: bash
+      env:
+        WANT_ASOF: ${{ inputs.asof }}
+        WANT_FENCE: ${{ inputs.fence }}
+        REQUIRE: ${{ inputs.require }}
+      run: |
+        for pair in "asof=$WANT_ASOF" "fence=$WANT_FENCE" "require=$REQUIRE"; do
+          case "${pair#*=}" in
+            auto|true|false) ;;
+            *) echo "::error::${pair%%=*} must be auto, true or false, not '${pair#*=}'"; exit 2 ;;
+          esac
+        done
+        [ "$REQUIRE" = auto ] && { echo "::error::require must be true or false"; exit 2; }
+
+        asof=$WANT_ASOF
+        if [ "$asof" = auto ]; then
+          asof=false
+          if [ -f asof.ini ]; then
+            asof=true
+          # Tracked files only, so a vendored or generated folder is not mistaken
+          # for the project's own claims.
+          elif git grep -qI -e '<!-- asof:' -e '# asof:' -e '// asof:' 2>/dev/null; then
+            asof=true
+          fi
+        fi
+        fence=$WANT_FENCE
+        if [ "$fence" = auto ]; then
+          fence=false
+          [ -d .fence/notes ] && [ -n "$(ls -A .fence/notes)" ] && fence=true
+        fi
+        echo "asof=$asof" >> "$GITHUB_OUTPUT"
+        echo "fence=$fence" >> "$GITHUB_OUTPUT"
+        echo "asof: $( [ "$asof" = true ] && echo will run || echo nothing to check )"
+        echo "fence: $( [ "$fence" = true ] && echo will run || echo nothing to check )"
+        if [ "$asof" != true ] && [ "$fence" != true ] && [ "$REQUIRE" = true ]; then
+          echo "::error::Neither check found anything to check: no asof.ini or asof: marker, and no .fence/notes. Add one, or set require: false."
+          exit 1
+        fi
+
+    # Pinned by commit. Dependabot proposes new versions of both; the README says
+    # which release each commit is.
+    - name: asof
+      id: asof
+      if: steps.plan.outputs.asof == 'true'
+      continue-on-error: true  # so fence still runs; the verdict below decides
+      uses: Blueangelman36/asof@53f3645bffc2a93a2a16c81ff96a5df4febc4c94 # v0.4.1
+      with:
+        args: ${{ inputs.asof-args }}
+
+    - name: fence
+      id: fence
+      if: steps.plan.outputs.fence == 'true'
+      continue-on-error: true
+      uses: Blueangelman36/chesterton@ee667eb20d4009f3574c849f037804351ffd27b3 # v0.1.1
+      with:
+        implementation: ${{ inputs.fence-implementation }}
+        args: ${{ inputs.fence-args }}
+        comment-on-pr: ${{ inputs.comment-on-pr }}
+        token: ${{ inputs.token }}
+
+    - name: Verdict
+      id: verdict
+      if: always() && steps.plan.outcome == 'success'
+      shell: bash
+      env:
+        ASOF: ${{ steps.asof.outcome }}
+        FENCE: ${{ steps.fence.outcome }}
+      run: |
+        word() { case "$1" in success) echo passed ;; failure) echo failed ;; *) echo skipped ;; esac; }
+        a=$(word "$ASOF"); f=$(word "$FENCE")
+        echo "asof=$a" >> "$GITHUB_OUTPUT"
+        echo "fence=$f" >> "$GITHUB_OUTPUT"
+        {
+          echo "### guardrails"
+          echo "| check | result |"
+          echo "|---|---|"
+          echo "| asof (numbers in docs) | $a |"
+          echo "| fence (recorded reasons) | $f |"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "asof: $a, fence: $f"
+        [ "$a" != failed ] && [ "$f" != failed ] || {
+          echo "::error::A guardrail failed. Its report is in the step above (asof: $a, fence: $f)."
+          exit 1
+        }
